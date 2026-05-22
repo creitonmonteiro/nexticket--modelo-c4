@@ -1,0 +1,97 @@
+@startuml
+title Fluxo de Reserva e Compra de Ingressos
+
+actor User
+
+participant "Booking Service" as Booking
+participant "Inventory Service" as Inventory
+database "Redis TTL Hold" as Redis
+participant "Payments System" as Payment
+participant "Mail Service" as Mail
+database "PostgreSQL" as DB
+
+User -> Booking : Solicita compra de ingresso
+
+Booking -> Inventory : Solicita Hold(eventId, seatId)
+
+Inventory -> Redis : Criar Hold TTL
+Redis --> Inventory : Hold criado
+
+Inventory --> Booking : HoldId
+
+Booking -> Payment : Processar pagamento
+
+alt Pagamento aprovado
+
+    Payment --> Booking : Pagamento aprovado
+
+    Booking -> Inventory : Confirmar Booked(HoldId)
+
+    Inventory -> Redis : Remover Hold TTL
+
+    Inventory -> DB : Atualizar status\nRESERVED -> BOOKED
+
+    Inventory --> Booking : Confirmação realizada
+
+    Booking -> DB : Persistir compra
+
+    Booking -> Mail : Enviar confirmação
+
+    Mail --> Booking : Notificação enviada
+
+    Booking --> User : Compra concluída
+
+else Pagamento recusado
+
+    Payment --> Booking : Pagamento recusado
+
+    Booking -> Inventory : Liberar Hold(HoldId)
+
+    Inventory -> Redis : Remover Hold TTL
+
+    Inventory -> DB : Liberar assento
+
+    Inventory --> Booking : Hold liberado
+
+    Booking --> User : Compra cancelada
+
+else Timeout / Falha de comunicação
+
+    Payment --> Booking : Timeout
+
+    Booking -> Inventory : Liberar Hold(HoldId)
+
+    Inventory -> Redis : Remover Hold TTL
+
+    Inventory -> DB : Liberar assento
+
+    Inventory --> Booking : Hold liberado
+
+    Booking --> User : Compra cancelada
+
+end
+
+== Compensação Automática ==
+
+... Falha silenciosa do Booking Service ...
+
+Redis -> Redis : TTL expira
+
+Redis -> Inventory : Evento de expiração
+
+Inventory -> DB : Liberar assento\nAtualizar estoque
+
+Inventory -> Redis : Remover lock expirado
+
+note right
+O TTL funciona como
+mecanismo de compensação automática.
+
+Caso o Booking Service falhe após
+criar o hold e antes de confirmar
+ou liberar a reserva, o ingresso
+retorna automaticamente para
+disponibilidade.
+end note
+
+@enduml
